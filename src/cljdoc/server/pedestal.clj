@@ -41,6 +41,13 @@
             [io.pedestal.interceptor :as interceptor]
             [io.pedestal.http.ring-middlewares :as ring-middlewares]))
 
+(defn get-artifact-data
+  "Return the artifact data from the contexts `::artifacts` key for the provided version-entity `v-ent`."
+  ([ctx v-ent]
+   (get-in ctx [::artifacts (select-keys v-ent [:group-id :artifact-id :version])]))
+  ([ctx v-ent k]
+   (get-in ctx [::artifacts (select-keys v-ent [:group-id :artifact-id :version]) k])))
+
 (def render-interceptor
   "This interceptor will render the documentation page for the current route
   based on the cache-bundle that has been injected into the context previously
@@ -51,8 +58,10 @@
   redirecting to that page."
   (interceptor/interceptor
    {:name  ::render
-    :enter (fn render-doc [{:keys [cache-bundle] :as ctx}]
+    :enter (fn render-doc [ctx]
              (let [path-params (-> ctx :request :path-params)
+                   artifact-data (get-artifact-data ctx path-params)
+                   cache-bundle (:cache-bundle artifact-data)
                    page-type   (-> ctx :route :route-name)]
                (if-let [first-article-slug (and (= page-type :artifact/version)
                                                 (-> cache-bundle :version :doc first :attrs :slug))]
@@ -62,9 +71,9 @@
                    (assoc ctx :response {:status 302, :headers {"Location" location}}))
 
                  (if cache-bundle
-                   (pu/ok-html ctx (html/render page-type path-params {:cache-bundle cache-bundle
-                                                                       :pom (::pom-info ctx)
-                                                                       :last-build (::last-build ctx)}))
+                   (->> (get-artifact-data ctx path-params)
+                        (html/render page-type path-params)
+                        (pu/ok-html ctx))
                    (let [resp {:status 404
                                :headers {"Content-Type" "text/html"}
                                :body (str (render-build-req/request-build-page path-params))}]
@@ -136,43 +145,53 @@
      :enter (fn releases-loader-inner [ctx]
               (pu/ok ctx (versions-data searcher store route-name ctx)))})])
 
+(defn seed-artifacts-keys
+  "An interceptor to prepare `::artifacts` key for [[artifact-data-loader]]."
+  [data-requirements]
+  (interceptor/interceptor
+   {:name ::seed-artifact-keys
+    :enter (fn seed-artifact-keys-inner [ctx]
+             (let [params (-> ctx :request :path-params)]
+               (assoc-in ctx [::artifacts (select-keys params [:group-id :artifact-id :version])] data-requirements)))}))
+
+(defn load-data
+  "Given the necessary system components `sys` a version entity `v-ent`
+  and a set describing the data wanted for the artifact described by `v-ent`,
+  return a map with the requested data. Example:
+
+      (load-data sys version-entity #{:pom :cache-bundle :last-build})"
+  [{:keys [cache build-tracker storage] :as _sys}
+   {:keys [group-id artifact-id version] :as v-ent}
+   data-requirements]
+  (let [pom-xml-memo (:cljdoc.util.repositories/get-pom-xml cache)
+        pom-parsed (pom/parse (pom-xml-memo (util/clojars-id v-ent) version))
+        pom-data {:description (-> pom-parsed pom/artifact-info :description)
+                  :dependencies (-> pom-parsed pom/dependencies-with-versions)}
+        bundle-params (assoc v-ent :dependency-version-entities (:dependencies pom-data))]
+    (cond-> {}
+      (contains? data-requirements :pom)
+      (assoc :pom pom-data)
+      (contains? data-requirements :cache-bundle)
+      (assoc :cache-bundle (when (storage/exists? storage v-ent)
+                             (storage/bundle-docs storage bundle-params)))
+      (contains? data-requirements :last-build)
+      (assoc :last-build (build-log/last-build build-tracker group-id artifact-id version)))))
+
 (defn artifact-data-loader
-  "Return an interceptor that loads all data from `store` that is
-  relevant for the artifact identified via the entity map in `:path-params`."
-  [store]
+  "Return an interceptor that loads data for all artifacts provided in `::artifacts`.
+
+  `::artifacts` is expected to be a map of version entitities to data-requirements:
+
+      {{:group-id \"a\" :artifact-id \"b\" :version \"1\"} #{:pom :cache-bundle}}"
+  [sys]
   (interceptor/interceptor
    {:name ::artifact-data-loader
     :enter (fn artifact-data-loader-inner [ctx]
-             (let [params (-> ctx :request :path-params)
-                   pom-data (::pom-info ctx)
-                   bundle-params (assoc params :dependency-version-entities (:dependencies pom-data))]
-               (log/info "Loading artifact cache bundle for" params (:cache-bundle ctx))
-               (if (storage/exists? store params)
-                 (assoc ctx :cache-bundle (storage/bundle-docs store bundle-params))
-                 ctx)))}))
-
-(defn last-build-loader
-  "Load a projects last build into the context"
-  [build-tracker]
-  (interceptor/interceptor
-   {:name ::last-build-loader
-    :enter (fn last-build-loader-inner [ctx]
-             (let [{:keys [group-id artifact-id version]} (-> ctx :request :path-params)]
-               (assoc ctx ::last-build (build-log/last-build build-tracker group-id artifact-id version))))}))
-
-(defn pom-loader
-  "Load a projects POM file, parse it and inject some information from it into the context."
-  [cache]
-  (interceptor/interceptor
-   {:name ::pom-loader
-    :enter (fn pom-loader-inner [ctx]
-             (let [pom-xml-memo (:cljdoc.util.repositories/get-pom-xml cache)
-                   params (-> ctx :request :path-params)
-                   pom-parsed (pom/parse (pom-xml-memo
-                                          (util/clojars-id params)
-                                          (:version params)))]
-               (assoc ctx ::pom-info {:description (-> pom-parsed pom/artifact-info :description)
-                                      :dependencies (-> pom-parsed pom/dependencies-with-versions)})))}))
+             (->> (::artifacts ctx)
+                  (map (fn [[v-ent data-reqs]]
+                         [v-ent (load-data sys v-ent data-reqs)]))
+                  (into {})
+                  (assoc ctx ::artifacts)))}))
 
 (def resolve-version-interceptor
   "An interceptor that will look at `:path-params` and try to turn it into an artifact
@@ -213,10 +232,9 @@
   rendering views for `route-name`."
   [storage cache build-tracker route-name]
   (->> [resolve-version-interceptor
-        (last-build-loader build-tracker)
         (when (= :artifact/doc route-name) doc-slug-parser)
-        (pom-loader cache)
-        (artifact-data-loader storage)
+        (seed-artifacts-keys #{:pom :cache-bundle :last-build})
+        (artifact-data-loader {:storage storage :cache cache :build-tracker build-tracker})
         render-interceptor]
        (keep identity)
        (vec)))
@@ -308,8 +326,8 @@
    {:name ::badge
     :leave (fn badge [ctx]
              (log/info "Badge req headers" (-> ctx :request :headers))
-             (let [{:keys [version]} (-> ctx :request :path-params)
-                   last-build (::last-build ctx)
+             (let [{:keys [version] :as v-ent} (-> ctx :request :path-params)
+                   last-build (get-artifact-data ctx v-ent :last-build)
                    [status color] (cond
                                     (and last-build (not (build-log/api-import-successful? last-build)))
                                     ["API import failed" :red]
@@ -450,8 +468,8 @@
          :artifact/version   (view storage cache build-tracker route-name)
          :artifact/namespace (view storage cache build-tracker route-name)
          :artifact/doc       (view storage cache build-tracker route-name)
-         :artifact/offline-bundle [(pom-loader cache)
-                                   (artifact-data-loader storage)
+         :artifact/offline-bundle [(seed-artifacts-keys #{:pom :cache-bundle})
+                                   (artifact-data-loader deps)
                                    offline-bundle]
 
          :artifact/current-via-short-id [(jump-interceptor)]
@@ -460,7 +478,8 @@
                               (jump-interceptor)]
          :badge-for-project  [(badge-interceptor)
                               resolve-version-interceptor
-                              (last-build-loader build-tracker)])
+                              (seed-artifacts-keys #{:last-build})
+                              (artifact-data-loader deps)])
        (assoc route :interceptors)))
 
 (defmethod ig/init-key :cljdoc/pedestal [_ opts]
