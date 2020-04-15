@@ -39,6 +39,7 @@
             [io.pedestal.http :as http]
             [io.pedestal.http.body-params :as body]
             [io.pedestal.interceptor :as interceptor]
+            [io.pedestal.interceptor.error :as pedestal-error]
             [io.pedestal.http.ring-middlewares :as ring-middlewares]))
 
 (def render-interceptor
@@ -413,6 +414,22 @@
                      :headers {}
                      :body "Could not find data, please request a build first"})
                   (assoc ctx :response)))}))
+
+(def catch-all-errors
+  (pedestal-error/error-dispatch
+   [context ex]
+
+  ;; Catch specific errors here. For example,
+  ;  [{:exception-type :java.io.FileNotFoundException}]
+  ;  (assoc context :response {:status 404
+  ;                            :body   {:error (.getMessage ex)}})
+
+   ;; Catch all errors that did not match.
+   :else
+   (do
+     (log/warnf "Caught an exception => %s" (.getMessage ex))
+     (assoc context :response {:status 500
+                               :body   {:error (.getMessage ex)}}))))
 
 (defn route-resolver
   "Given a route name return a list of interceptors to handle requests
