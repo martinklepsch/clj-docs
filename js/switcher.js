@@ -2,6 +2,8 @@ import { Component, createElement, h } from "preact";
 import fuzzysort from "fuzzysort";
 import * as listSelect from "./listselect";
 
+const previouslyOpenedKey = "previouslyOpened";
+
 function isSameProject(p1, p2) {
   // I can't believe you have to do this
   return p1.group_id === p2.group_id && p1.artifact_id === p2.artifact_id; //&& p1.version == p2.version
@@ -23,7 +25,7 @@ function trackProjectOpened() {
   const project = parseCljdocURI(window.location.pathname);
   if (project) {
     var previouslyOpened =
-      JSON.parse(localStorage.getItem("previouslyOpened")) || [];
+      JSON.parse(localStorage.getItem(previouslyOpenedKey)) || [];
     // remove identical values
     previouslyOpened = previouslyOpened.filter(p => !isSameProject(p, project));
     previouslyOpened.push(project);
@@ -34,7 +36,7 @@ function trackProjectOpened() {
         previouslyOpened.length
       );
     }
-    localStorage.setItem("previouslyOpened", JSON.stringify(previouslyOpened));
+    localStorage.setItem(previouslyOpenedKey, JSON.stringify(previouslyOpened));
   }
 }
 
@@ -154,7 +156,7 @@ class Switcher extends Component {
 
   initializeState() {
     let previouslyOpened =
-      JSON.parse(localStorage.getItem("previouslyOpened")) || [];
+      JSON.parse(localStorage.getItem(previouslyOpenedKey)) || [];
 
     previouslyOpened.forEach(
       r =>

@@ -5,11 +5,7 @@
   ([] (search-form ""))
   ([search-terms]
    [:div.w-90.mb4
-    [:div#cljdoc-search {:data-initial-value search-terms}]
-    [:p.bg-washed-yellow.ba.b--yellow.ph3.pv2.br2.f6.lh-copy
-     "New search - please report problems and bad results in the "
-     [:a.link {:href "https://github.com/cljdoc/cljdoc/issues/308"} "search improvements issue"]
-     " to help us make it better!"]]))
+    [:div#cljdoc-search {:data-initial-value search-terms}]]))
 
 
 (defn search-page [context]
