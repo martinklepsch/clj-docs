@@ -474,10 +474,11 @@
        (assoc route :interceptors)))
 
 (defmethod ig/init-key :cljdoc/pedestal [_ opts]
-  (log/info "Starting pedestal on port" (:port opts))
+  (log/infof "Starting pedestal on %s:%s" (:host opts) (:port opts))
   (-> {::http/routes (routes/routes (partial route-resolver opts) {})
        ::http/type   :jetty
        ::http/join?  false
+       ::http/host   (:host opts)
        ::http/port   (:port opts)
        ;; TODO look into this some more:
        ;; - https://groups.google.com/forum/#!topic/pedestal-users/caRnQyUOHWA

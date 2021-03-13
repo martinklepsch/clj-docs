@@ -7,7 +7,7 @@
                            :default "dev"}
  :cljdoc/server {:port 8000
                  :host #profile {:prod "cljdoc.org"
-                                 :default "localhost"}
+                                 :default "0.0.0.0"}
                  :analysis-service #profile {:default :local
                                              :prod :circle-ci}
                  :autobuild-clojars-releases? #profile {:default false
